@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Title</title>
+    <meta charset="utf-8">
+    <style>
+      @import url(https://fonts.googleapis.com/css?family=Yanone+Kaffeesatz);
+      @import url(https://fonts.googleapis.com/css?family=Droid+Serif:400,700,400italic);
+      @import url(https://fonts.googleapis.com/css?family=Ubuntu+Mono:400,700,400italic);
+
+      body { font-family: 'Droid Serif'; }
+      h1, h2, h3 {
+        font-family: 'Yanone Kaffeesatz';
+        font-weight: normal;
+      }
+      .remark-code, .remark-inline-code { font-family: 'Ubuntu Mono'; }
+    </style>
+  </head>
+  <body>
+    <textarea id="source">
+
+class: center, middle
+
+Speeding Up Python
+==================
+With a single command
+---------------------
+
+#### Cajetan Rodrigues, TrustYou GmbH
+---
+class: center, middle
+
+Speeding up ~~Python~~ Semantic Analysis
+======================================
+Of guest-reviews with a single command
+---------------------
+
+#### Cajetan Rodrigues, TrustYou GmbH
+???
+At TrustYou, we deal with heaps of review texts from hotel guests, terabytes of data from all over the Internet. Our goal is to help hoteliers and chains understand what their guests think about their services and how to improve the guest experience so that people like you can have an even more pleasant vacation next time.
+
+In order to analyze the huge pile of unstructured, plain text reviews that we sit on, we have a project called “Sema” that provides a semantic analysis of the review text content and is therefore at the core of our internal processing.
+
+Sema can tell you that “I hate this hotel” conveys a fairly negative perception of the overall place by a guest, whereas “they have a lovely pool with a gorgeous view on the Alps” is quite the opposite and improves the performance rank of the hotel by increasing the score of its pool category.
+---
+background-image: url(https://ticary.com/assets/img/NLP.png)
+???
+For the text processing inside of Sema, we use a library called NLTK, the Natural Language ToolKit, which is one of the great libraries that make Python such a versatile language. While there are faster text processing tools for Python available (especially spaCy, which we started using in recent projects), there is none that supports so many languages out of the box. At TrustYou, we process reviews in way more than 20 languages by now, including Croatian, Thai, Japanese and Mandarin.
+
+Now, processing the text of millions of reviews that we crawl into our system every week takes a lot of time, and, sadly, NLTK is better known for its feature set than for its speed. It was originally written for research and teaching purposes and is entirely implemented in Python, and all three properties add up to its processing overhead.
+
+---
+
+Finding the problem
+===================
+`$ python -m cProfile -s time myscript.py`
+
+???
+We recently spent some time profiling specifically the Japanese text processing, because we saw from our monitoring that it is much slower than other languages, especially the English text processing. We knew that the speed would eventually become problematic, so we decided to look into it.
+
+For profiling Python code, the usual tool is cProfile. It comes with a nice command line interface (in addition to its API), which allows you to just take a Python script and run it.
+---
+Finding the problem
+===================
+`$ python -m cProfile -s time myscript.py`
+![profiling output](https://miro.medium.com/max/700/1*IojhpWij3sR6w4AysKYOyw.png)
+???
+Here is the output from running the profiler on a Sema script that analyses a corpus of Japanese reviews
+As it turns out, most of the time is spent inside of the NLTK library, and specifically in just two modules: “nltk.parse.chart" and "nltk.grammar". Both are parts of the language parser in NLTK, which uses our custom set of grammars to make sense of review texts.
+---
+Nicer profiles
+==============
+`$ pip install snakeviz`
+
+`$ python -m cProfile -o profiledump.prof myscript.py`
+
+`$ snakeviz profiledump.prof`
+???
+To make this profile more accessible, we use SnakeViz, an in-browser application that visualises Python run profiles. To use it, simply run these commands
+---
+Nicer profiles
+==============
+`$ pip install snakeviz`
+
+`$ python -m cProfile -o profiledump.prof myscript.py`
+
+`$ snakeviz profiledump.prof`
+![snakeviz profile](https://miro.medium.com/max/700/1*qSLO0_xEtQDYKlIVw9EN_A.png)
+???
+It will automatically open a new tab in your browser that looks similar to this:
+It allows you not only to sort and search the profile as you please, but it also gives you a nice interactive visualization of the call stack which is very useful for drilling down into specific calls and identifying problems.
+---
+Faster, Faster!
+===============
+`$ pip install Cython`
+
+`$ cythonize -i -3 nltk/parse/chart.py nltk/grammar.py`
+
+`$ cythonize -f -i -3 -X profile=True nltk/parse/chart.py nltk/grammar.py`
+???
+Now, NLTK is an old library, and a lot of work has probably gone into improving its speed already. So looking for low hanging fruit for speeding up the parser is not very likely to lead anywhere.
+What we did instead was to use the Cython compiler for translating the bottleneck modules from (interpreted) Python into native code.
+This translates the Python 3 code into C modules (right next to the .py files), and then runs distutils and gcc to compile them into extension modules, shared native libraries that can be imported from Python.
+
+In order to validate that this improves the performance, we enabled profiling support in the modules by passing the compiler directive "-X profile=True" to Cython:
+and then ran the profiler over it again, to see how the profile changed. Profiling support is disabled in Cython compiled modules by default to further improve the performance. Thus the need for a directive.
+---
+Faster, Faster!
+===============
+`$ pip install Cython`
+
+`$ cythonize -i -3 nltk/parse/chart.py nltk/grammar.py`
+
+`$ cythonize -f -i -3 -X profile=True nltk/parse/chart.py nltk/grammar.py`
+
+![improved profile](https://miro.medium.com/max/700/1*m4Xow1I2gClBD_kK5GDQwA.png)
+???
+This is the new profile, using the same script, but now importing the compiled modules instead of the Python modules
+As you can see, while the two modules are still at the top of the list, they account for much less time now, which leads to an overall speedup of more than 30%.
+
+This encourages us to build and use our own binary package of NLTK in which we will include the two compiled modules, by simply running the cythonize command over it. This should speed up our Sema processing by a couple of hours per day – and we didn't have to change a single line of code in NLTK!
+
+We obviously also filed a pull request against NLTK to integrate the compilation into their build process.
+---
+Remember to:
+===========
+
+* Build separate binary wheel packages for each Python version you support.
+
+* Make packages available for each platform (Linux, MacOS-X, Windows etc) 
+
+* Target an old CPU for backwards-compatibility
+
+???
+As mentioned, NLTK is a pure Python package that runs in Python 2.x and 3.x. That makes it very easy to ship it as a single package that installs and works on all current Python versions.
+
+Once you start compiling modules from it, however, the resulting binaries will no longer work across different Python versions, and separate binary wheel packages will need to be prepared and shipped for each supported Python version, e.g. 2.7, 3.5, 3.6, 3.7. Obviously, the binaries are also platform specific, which means that this set of packages is needed for each platform now, e.g. Linux, MacOS-X and Windows. And, being native code, care has to be taken that the C compiler generates code that runs on all CPUs that should be supported, i.e. that it avoids using recent CPU instructions that are only available in recent processors. The latter can be done by targeting an old CPU, e.g. by setting the C compiler flags to something like CFLAGS="-O3 -march=core2".
+
+In our case at TrustYou, the number of different Python versions that we support is low (currently only 2.7 and 3.6/3.7), and the only relevant architecture is Linux, for which distribution independent Linux binaries can be built using the manylinux Docker images.
+
+But, since we did not modify the NLTK source code at all, using it uncompiled as it is normally distributed is just fine and leads to the exact same results. Compiling the modules simply makes them faster for us in production.
+---
+class: center, middle
+
+Thanks!
+=======
+
+![twitter](https://www.clearswift.com/sites/all/themes/clearswift2/img/twitter.png) 
+@ r_cajetan
+----------
+
+    </textarea>
+    <script src="https://remarkjs.com/downloads/remark-latest.min.js">
+    </script>
+    <script>
+      var slideshow = remark.create();
+    </script>
+  </body>
+</html>
